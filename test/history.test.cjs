@@ -21,6 +21,8 @@ function record(id, updatedAt, dps = null) {
     title: `빌드 ${id}`,
     favorite: false,
     note: '',
+    appVersion: '0.1.10',
+    gameData: { checkedAt:'2026-10-21', patchSource:'https://kkaebigg.com/news/skill-balance-20261021/' },
     build: { skills: ['s001'], currentOrder: ['s001'], skillSnapshots: [{ id:'s001', name:'시험', family:'연타' }] },
     measurement: { startedAt:updatedAt-1000, endedAt:updatedAt, durationMs:1000, events:[], ocr:{dps,rows:[]} },
     result: { rows:[], conditionTiming:[], basicShare:0 }
@@ -30,6 +32,8 @@ function record(id, updatedAt, dps = null) {
 store.save(record('one', 1000, 1234));
 assert.equal(store.list().length, 1);
 assert.equal(store.list()[0].measurement.ocr.dps, 1234);
+assert.equal(store.list()[0].gameData.checkedAt, '2026-10-21', '측정 당시 게임 데이터 기준을 보존해야 합니다.');
+assert.equal(store.list()[0].gameData.patchSource, 'https://kkaebigg.com/news/skill-balance-20261021/');
 
 const updated = record('one', 2000, 2345);
 updated.title = '추가 측정';

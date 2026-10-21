@@ -162,7 +162,7 @@ function effectNames(skill) {
   return {
     buffs: unique(skill?.buffs),
     debuffs: unique(skill?.debuffs),
-    timings: Object.entries(skill?.timingEffects || {}).map(([name,value]) => ({ name, duration:Number(value?.duration || 0), application:String(value?.application || '') })),
+    timings: Object.entries(skill?.timingEffects || {}).map(([name,value]) => ({ name, duration:Number(value?.duration || 0), application:String(value?.application || ''), policy:String(value?.policy || (Number(value?.duration)>0?'timed':'unknown')) })),
     conditions: (skill?.conditions || []).filter(value => value && value.effect).map(value => ({
       effect:String(value.effect),
       result:String(value.result || '조건 효과'),
@@ -173,7 +173,8 @@ function effectNames(skill) {
 }
 
 function normalizeEffect(value) { return String(value || '').replace(/\s+/g,'').toLowerCase(); }
-function isStateCondition(value){return /(감전|화상|파쇄|기세|낙인|출혈|충격|관통|파열|원소|질풍|빙결|속박|기절|마비|중독|수면|경직)/.test(String(value||''));}
+const stateConditionNames=new Set(['감전','관통','기세','낙인','마비','받는피해증가','빙결','속박','수호','약화','원소','정밀','질풍','추적','출혈','충격','파쇄','파열','한기','화상','기절','중독','수면','경직']);
+function isStateCondition(value){return stateConditionNames.has(normalizeEffect(value));}
 
 function analyzeEffectState({ skills = [], events = [], startedAt = 0, endedAt = 0 }) {
   const ids=new Set(skills.map(value=>value.id));
@@ -186,7 +187,7 @@ function analyzeEffectState({ skills = [], events = [], startedAt = 0, endedAt =
     const names=[...new Set([...effects.buffs,...effects.debuffs,...effects.timings.map(item=>item.name)])];
     for(const name of names){
       const key=normalizeEffect(name),timing=timingByName.get(key);
-      definitions.push({effect:name,key,kind:debuffs.has(key)?'debuff':buffs.has(key)?'buff':'effect',producerId:value.id,producerName:value.name,duration:Number(timing?.duration||0),application:timing?.application||''});
+      definitions.push({effect:name,key,kind:debuffs.has(key)?'debuff':buffs.has(key)?'buff':'effect',producerId:value.id,producerName:value.name,duration:Number(timing?.duration||0),application:timing?.application||'',policy:timing?.policy||'unknown'});
     }
   }
   const windows=[];
@@ -200,10 +201,10 @@ function analyzeEffectState({ skills = [], events = [], startedAt = 0, endedAt =
   for(const consumer of skills){
     for(const condition of effectNames(consumer).conditions){
       if(!isStateCondition(condition.effect))continue;
-      const key=normalizeEffect(condition.effect),matching=definitions.filter(value=>value.key===key),known=matching.some(value=>value.duration>0);
+      const key=normalizeEffect(condition.effect),matching=definitions.filter(value=>value.key===key),known=matching.some(value=>value.duration>0),nonTimed=matching.find(value=>['instant','persistent'].includes(value.policy));
       for(const event of casts.filter(value=>value.skillId===consumer.id)){
         const active=known?windows.filter(value=>value.key===key&&event.at>=value.start&&event.at<=value.end).sort((a,b)=>b.end-a.end)[0]:null;
-        attempts.push({consumerId:consumer.id,consumerName:consumer.name,effect:condition.effect,result:condition.result,at:event.at,evidence:event.evidence||'visual',status:!matching.length?'missing-producer':!known?'unknown-duration':active?'success':'miss',remainingMs:active?Math.max(0,active.end-event.at):null,producerId:active?.producerId||matching[0]?.producerId||null,producerName:active?.producerName||matching[0]?.producerName||null});
+        attempts.push({consumerId:consumer.id,consumerName:consumer.name,effect:condition.effect,result:condition.result,at:event.at,evidence:event.evidence||'visual',status:!matching.length?'missing-producer':!known?(nonTimed?'non-timed':'unknown-duration'):active?'success':'miss',remainingMs:active?Math.max(0,active.end-event.at):null,producerId:active?.producerId||matching[0]?.producerId||null,producerName:active?.producerName||matching[0]?.producerName||null,policy:nonTimed?.policy||null});
       }
     }
   }
@@ -216,7 +217,7 @@ function analyzeEffectState({ skills = [], events = [], startedAt = 0, endedAt =
       row.total+=1;row.knownDuration=true;
       if(attempt.status==='success'){row.covered+=1;row.remainingTotalMs+=Number(attempt.remainingMs||0);}else row.missed+=1;
       if(attempt.evidence==='sequence')row.recovered+=1;else row.direct+=1;
-    }else row.unknown+=1;
+    }else if(attempt.status!=='non-timed')row.unknown+=1;
   }
   const conditions=[...grouped.values()].map(row=>{
     const definition=definitions.find(value=>value.key===normalizeEffect(row.effect)&&value.producerId===row.producerId)||definitions.find(value=>value.key===normalizeEffect(row.effect));
@@ -233,7 +234,7 @@ function analyzeEffectState({ skills = [], events = [], startedAt = 0, endedAt =
 function analyzeEffectTiming({ skills = [], events = [], startedAt = 0, endedAt = 0 }) {
   const ids=new Set(skills.map(value=>value.id));
   const casts=events.filter(event=>event?.type==='cast'&&ids.has(event.skillId)).sort((a,b)=>a.at-b.at);
-  const start=startedAt||casts[0]?.at||0,end=Math.max(start+1,endedAt||casts.at(-1)?.at||start+1),period=end-start;
+  const start=startedAt??casts[0]?.at??0,end=Math.max(start+1,endedAt??casts.at(-1)?.at??start+1),period=end-start;
   const consumers=new Map();
   for(const value of skills)for(const condition of value.conditions||[]){const key=normalizeEffect(condition?.effect);if(key){if(!consumers.has(key))consumers.set(key,[]);consumers.get(key).push(value.id);}}
   const rows=[];
@@ -243,7 +244,7 @@ function analyzeEffectTiming({ skills = [], events = [], startedAt = 0, endedAt 
     const producerCasts=casts.filter(event=>event.skillId===value.id);
     for(const name of names){
       const timing=knownByName.get(normalizeEffect(name)),duration=Number(timing?.duration||0),durationMs=duration*1000;
-      if(!duration){rows.push({skillId:value.id,skillName:value.name,effect:name,known:false,casts:producerCasts.length,activation:'cast-confirmed'});continue;}
+      if(!duration){rows.push({skillId:value.id,skillName:value.name,effect:name,known:false,policy:timing?.policy||'unknown',casts:producerCasts.length,activation:'cast-confirmed'});continue;}
       const windows=producerCasts.map(event=>({start:event.at,end:event.at+durationMs}));
       const clipped=windows.map(item=>({start:Math.max(start,item.start),end:Math.min(end,item.end)})).filter(item=>item.end>item.start).sort((a,b)=>a.start-b.start);
       let activeMs=0,cursorEnd=0;
@@ -304,7 +305,7 @@ function optimizeSequence({ skills, events = [], damageRows = [], startedAt = 0,
       if(timing.overlaps)row.reasons.push(`${timing.effect}가 남은 상태에서 ${timing.overlaps}회 재사용`);
       if(timing.missedConsumers)row.reasons.push(`${timing.effect} 조건 도술 ${timing.missedConsumers}회가 지속시간 밖에서 발동`);
     }
-    const unknown=row.timing.filter(item=>!item.known).map(item=>item.effect);
+    const unknown=row.timing.filter(item=>!item.known&&!['instant','persistent'].includes(item.policy)).map(item=>item.effect);
     if(unknown.length)row.reasons.push(`발동은 확정·지속시간 미확인: ${unknown.join('·')} (시간 효율만 계산 제외)`);
     if (!row.reasons.length) row.reasons.push(row.count ? `실제 ${row.count}회 사용 기록 반영` : '실측 표본 부족으로 기본 재사용 시간 반영');
   }

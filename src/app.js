@@ -356,7 +356,10 @@ function renderRecommendation(result) {
   $('#result-effect-timeline').innerHTML=effectTimelineMarkup(result.effectState||{windows:[],attempts:[]},resultStart,resultEnd,false);
   const timed=(result.effectTiming||[]).filter(item=>item.casts>0);
   $('#effect-timing-findings').innerHTML=timed.length?timed.map(item=>{
-    if(!item.known)return `<article class="effect-timing-card unknown"><strong>${escapeHtml(item.skillName)} → ${escapeHtml(item.effect)}</strong><b>${item.casts}회 발동 확정</b><p>지속시간이 없어 시간 연계 판정만 제외했습니다.</p></article>`;
+    if(!item.known){
+      const note=item.policy==='instant'?'즉시 적용 효과라 지속시간 연계 대상이 아닙니다.':item.policy==='persistent'?'고정 종료 시간이 없는 효과라 시간 연계 대상이 아닙니다.':'지속시간 자료가 없어 시간 연계 판정만 제외했습니다.';
+      return `<article class="effect-timing-card unknown"><strong>${escapeHtml(item.skillName)} → ${escapeHtml(item.effect)}</strong><b>${item.casts}회 발동 확정</b><p>${note}</p></article>`;
+    }
     const ok=item.consumerCasts?item.coveredConsumers:item.casts,total=item.consumerCasts||item.casts;
     return `<article class="effect-timing-card ${item.missedConsumers?'miss':'good'}"><strong>${escapeHtml(item.skillName)} → ${escapeHtml(item.effect)} ${item.duration}초</strong><b>${item.consumerCasts?`조건 적중 ${ok}/${total}회`:`${item.casts}회 발동 확정`}</b><p>측정 기간 유지율 ${Math.round(item.coverage)}%${item.overlaps?` · 중복 ${item.overlaps}회`:''}</p></article>`;
   }).join(''):'<p class="empty-effect-result">발동한 강화·약화 효과가 아직 없습니다.</p>';
@@ -438,6 +441,7 @@ function createHistoryRecord(result,endedAt) {
     favorite:Boolean(previous?.favorite),
     note:previous?.note||'',
     appVersion:state.appVersion,
+    gameData:{checkedAt:state.catalog?.meta?.checkedAt||null,patchSource:state.catalog?.meta?.systemPatch?.source||null},
     build:{
       name:state.build.name,
       signature:state.build.signature,
@@ -594,6 +598,7 @@ function showHistoryComparison() {
   if(records.length!==2)return;
   const [a,b]=records,conditionA=conditionSummary(a).rate,conditionB=conditionSummary(b).rate;
   const metrics=[
+    {label:'게임 데이터 기준',a:a.gameData?.checkedAt||null,b:b.gameData?.checkedAt||null,format:value=>value||'기록 없음',type:'version'},
     {label:'실측 DPS',a:a.measurement.ocr?.dps,b:b.measurement.ocr?.dps,format:value=>value==null?'측정기 미표시':fmt(value),type:'dps'},
     {label:'평타 행동 비중',a:Number(a.result.basicShare||0),b:Number(b.result.basicShare||0),format:value=>`${Math.round(value)}%`,type:'rate'},
     {label:'조건 적중률',a:conditionA,b:conditionB,format:value=>value==null?'비교 불가':`${Math.round(value)}%`,type:'rate'},
@@ -602,7 +607,7 @@ function showHistoryComparison() {
     {label:'측정 시간',a:a.measurement.durationMs,b:b.measurement.durationMs,format:formatDuration,type:'duration'}
   ];
   $('#compare-head').innerHTML=`<tr><th>항목</th><th>${escapeHtml(a.title)}</th><th>${escapeHtml(b.title)}</th><th>비교 결과</th></tr>`;
-  $('#compare-body').innerHTML=metrics.map(metric=>`<tr><td><b>${metric.label}</b></td><td class="compare-value">${metric.format(metric.a)}</td><td class="compare-value">${metric.format(metric.b)}</td><td>${metric.type==='duration'?'<span class="compare-unavailable">측정 구간 참고</span>':comparisonDifference(metric.a,metric.b,metric.type)}</td></tr>`).join('');
+  $('#compare-body').innerHTML=metrics.map(metric=>`<tr><td><b>${metric.label}</b></td><td class="compare-value">${metric.format(metric.a)}</td><td class="compare-value">${metric.format(metric.b)}</td><td>${metric.type==='duration'?'<span class="compare-unavailable">측정 구간 참고</span>':metric.type==='version'?(metric.a&&metric.a===metric.b?'<span class="compare-positive">동일 기준</span>':'<span class="compare-negative">패치 전후 비교 주의</span>'):comparisonDifference(metric.a,metric.b,metric.type)}</td></tr>`).join('');
   $('#history-compare-panel').hidden=false;
   $('#history-compare-panel').scrollIntoView({behavior:'smooth',block:'start'});
 }

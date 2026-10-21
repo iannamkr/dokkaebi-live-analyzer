@@ -106,6 +106,51 @@ assert.equal(effectState.attempts[0].remainingMs,4000,'조건 성공 시 남은 
 const timedOptimized=optimizeSequence({skills:timedSkills,events:timedEvents,startedAt:1000,endedAt:15000});
 assert.equal(timedOptimized.basicAttacks,2);
 assert.ok(timedOptimized.basicShare>0);
+
+const lightningStorm=catalog.skills.find(skill=>skill.name==='번개 폭풍');
+const pinpointShot=catalog.skills.find(skill=>skill.name==='일점 저격');
+assert.equal(catalog.skills.length,105,'현행 도술 105개가 모두 있어야 합니다.');
+assert.equal(catalog.meta.systemPatch?.pvpMultiplier,.45,'10월 21일 PvP 공통 배율을 반영해야 합니다.');
+assert.equal(catalog.meta.systemPatch?.damageReductionCap,.75,'10월 21일 피해 감소 상한을 반영해야 합니다.');
+assert.ok(catalog.skills.every(skill=>Number(skill.cooldown)===Number(skill.referenceNumbers?.cd)&&Number(skill.basic?.cooldown)===Number(skill.referenceNumbers?.cd)),'모든 도술의 감지용 대기시간이 최신 기준과 일치해야 합니다.');
+for(const skill of catalog.skills){
+  for(const effect of [...(skill.buffs||[]),...(skill.debuffs||[])]){
+    const timingEffect=skill.timingEffects?.[effect];
+    assert.ok(timingEffect,`${skill.name}의 ${effect} 판정 정책이 누락되었습니다.`);
+    assert.ok(['timed','instant','persistent'].includes(timingEffect.policy),`${skill.name}의 ${effect} 판정 정책이 유효해야 합니다.`);
+    if(timingEffect.policy==='timed')assert.ok(Number(timingEffect.duration)>0,`${skill.name}의 ${effect} 지속시간이 있어야 합니다.`);
+  }
+}
+const timedProducerEffects=new Set(catalog.skills.flatMap(skill=>[...(skill.buffs||[]),...(skill.debuffs||[])].filter(effect=>skill.timingEffects?.[effect]?.policy==='timed').map(effect=>effect.replace(/\s+/g,''))));
+for(const skill of catalog.skills)for(const condition of skill.conditions||[])assert.ok(timedProducerEffects.has(condition.effect.replace(/\s+/g,'')),`${skill.name}의 ${condition.effect} 조건에 지속시간이 확인된 부여 도술이 있어야 합니다.`);
+const nanta=catalog.skills.find(skill=>skill.name==='난타');
+const earthquake=catalog.skills.find(skill=>skill.name==='지진');
+const headStrike=catalog.skills.find(skill=>skill.name==='머리치기');
+const courage=catalog.skills.find(skill=>skill.name==='용맹의 기운');
+assert.deepStrictEqual(nanta.buffs,[],'삭제된 난타의 기본 피해 감소를 남기면 안 됩니다.');
+assert.deepStrictEqual(earthquake.debuffs,['속박'],'지진의 현행 제어 효과는 속박입니다.');
+assert.deepStrictEqual(headStrike.debuffs,['침묵','이동속도 감소'],'머리치기의 추가된 이동속도 감소를 반영해야 합니다.');
+assert.deepStrictEqual(courage.buffs,['공격력 증가'],'용맹의 기운의 현행 강화 효과를 반영해야 합니다.');
+const allConditionEvents=catalog.skills.filter(skill=>skill.conditions?.length).map((skill,index)=>({type:'cast',skillId:skill.id,at:1000+index*100,evidence:'visual'}));
+const allConditionState=analyzeEffectState({skills:catalog.skills,events:allConditionEvents,startedAt:0,endedAt:100000});
+const expectedConditionPairs=catalog.skills.reduce((total,skill)=>total+(skill.conditions?.length||0),0);
+assert.equal(allConditionState.conditions.length,expectedConditionPairs,'정의된 강화·약화 조건을 허용 목록 때문에 건너뛰면 안 됩니다.');
+assert.equal(lightningStorm.timingEffects?.['마비']?.duration,1,'번개 폭풍의 마비 지속시간은 1초로 판정해야 합니다.');
+const paralysisState=analyzeEffectState({
+  skills:[lightningStorm,pinpointShot],
+  events:[
+    {type:'cast',skillId:lightningStorm.id,at:1000,evidence:'visual'},
+    {type:'cast',skillId:pinpointShot.id,at:1800,evidence:'visual'},
+    {type:'cast',skillId:pinpointShot.id,at:2300,evidence:'visual'}
+  ],
+  startedAt:0,
+  endedAt:3000
+});
+const paralysisCondition=paralysisState.conditions.find(row=>row.consumerId===pinpointShot.id&&row.effect==='마비');
+assert.equal(paralysisCondition.duration,1,'마비 조건 결과에 1초 지속시간이 노출되어야 합니다.');
+assert.equal(paralysisCondition.covered,1,'번개 폭풍 후 1초 안의 일점 저격은 마비 조건 적중으로 판정해야 합니다.');
+assert.equal(paralysisCondition.missed,1,'번개 폭풍 후 1초를 넘긴 일점 저격은 마비 조건 미적중으로 판정해야 합니다.');
+assert.equal(paralysisCondition.unknown,0,'마비 지속시간을 확인 불가로 남기면 안 됩니다.');
 assert.throws(() => cleanBuild({schema:'unknown',skills:ids},catalog));
 assert.throws(() => cleanBuild({schema:'dosul-live-v1',skills:['missing']},catalog));
 
