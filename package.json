@@ -10,7 +10,7 @@
     "start": "electron .",
     "test": "node test/core.test.cjs",
     "predist": "node scripts/clean-release.cjs",
-    "dist": "electron-builder --win nsis",
+    "dist": "electron-builder --win nsis --publish never",
     "postdist": "node scripts/prune-release.cjs",
     "pack": "electron-builder --dir"
   },
