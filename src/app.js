@@ -259,12 +259,12 @@ function renderTimeline() {
 function renderEfficiency(r) {
   if (!state.build) return;
   const knownShares=state.ocr.rows.filter(value=>value.share!=null),knownShare=knownShares.reduce((sum,value)=>sum+Number(value.share||0),0);
-  $('#damage-coverage').textContent=state.ocr.dps==null?'피해 측정기 OCR 대기 중입니다.':`피해 측정기 ${knownShares.length}/${state.build.skills.length}개 도술 · 점유율 ${knownShare.toFixed(1)}% 확인 · 나머지 ${Math.max(0,100-knownShare).toFixed(1)}%는 도술별 미측정`;
+  $('#damage-coverage').textContent=state.ocr.dps==null?'피해 측정기 OCR 대기 중입니다.':`피해 측정기 실측 ${knownShares.length}/${state.build.skills.length}개 · 실측 점유율 합계 ${knownShare.toFixed(1)}% · 화면에 없는 도술은 집계 제외`;
   $('#efficiency-body').innerHTML = r.rows.map(row => {
     const off = disabledSet().has(row.id);
     const verdict = off ? ['OFF',''] : row.count < 2 ? ['관측 중',''] : row.utilization >= 85 ? ['원활','good'] : row.utilization >= 65 ? ['지연','warn'] : ['낭비 큼','warn'];
     const actual=state.ocr.rows.find(value=>value.skillId===row.id);
-    const unmeasured='<span class="unmeasured" title="피해 측정기의 해당 도술 행을 OCR로 읽지 못했습니다. 0을 의미하지 않습니다.">미측정</span>';
+    const unmeasured='<span class="unmeasured" title="게임 피해 측정기 화면에 해당 도술 행이 표시되지 않아 실측할 수 없습니다. 0을 의미하지 않습니다.">측정기 미표시</span>';
     return `<tr><td><div class="skill-cell"><img src="${iconUrl(row.id)}" alt=""><div><b>${escapeHtml(row.name)}</b><small>${off?'자동 사용 제외':'실시간 관측'}</small></div></div></td><td>${escapeHtml(row.family)}</td><td>${effectChips(row.id)}</td><td>${row.count}회${row.inferredCount?`<small class="inferred-count">복원 ${row.inferredCount}</small>`:''}</td><td>${actual?fmt(actual.damage):unmeasured}</td><td>${actual&&actual.share!=null?actual.share.toFixed(1)+'%':unmeasured}</td><td>${row.meanInterval?row.meanInterval.toFixed(1)+'초':'—'}</td><td>${row.cooldown?row.cooldown.toFixed(1)+'초':'—'}</td><td>${row.utilization==null?'—':`<div class="bar"><i style="width:${Math.round(row.utilization)}%"></i></div> ${Math.round(row.utilization)}%`}</td><td><span class="judgement ${verdict[1]}">${verdict[0]}</span></td></tr>`;
   }).join('');
 }
