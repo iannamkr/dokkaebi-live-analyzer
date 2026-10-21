@@ -1,7 +1,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { cleanBuild, encodeBuild, decodeBuild, expectedOrder, sequenceReport, cooldownTransition, advanceSlotDetector, analyzeEffectTiming, optimizeSequence } = require('../src/core.cjs');
+const { cleanBuild, encodeBuild, decodeBuild, expectedOrder, sequenceReport, cooldownTransition, advanceSlotDetector, analyzeEffectTiming, analyzeEffectState, optimizeSequence } = require('../src/core.cjs');
 
 const catalog = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'assets', 'data.json'), 'utf8'));
 const ids = catalog.skills.slice(0, 9).map(skill => skill.id);
@@ -60,7 +60,7 @@ for(let index=0;index<3;index+=1){const value=advanceSlotDetector(orangeDetector
 assert.equal(orangeCasts,1,'밝기 변화가 작아도 채도가 감소하면 난타 같은 주황색 슬롯의 발동을 감지해야 합니다.');
 
 const optimizerSkills=[
-  {id:'producer',name:'약화 선행',family:'시험',cooldown:8,debuffs:['화상'],conditions:[]},
+  {id:'producer',name:'약화 선행',family:'시험',cooldown:8,debuffs:['화상'],timingEffects:{'화상':{duration:10,application:'hit'}},conditions:[]},
   {id:'consumer',name:'조건 후속',family:'시험',cooldown:5,buffs:[],debuffs:[],conditions:[{effect:'화상',result:'피해 증가'}]},
   {id:'ultimate',name:'궁극기',family:'시험',ultimate:true,cooldown:30,buffs:[],debuffs:[],conditions:[]}
 ];
@@ -71,8 +71,11 @@ const minimalMove=optimizeSequence({skills:optimizerSkills,currentOrder:['consum
 assert.deepStrictEqual(minimalMove.order,['producer','consumer','ultimate'],'현재 순서를 최대한 유지하면서 조건 부여→소비만 바로잡아야 합니다.');
 assert.equal(minimalMove.relationships[0].action,'move-consumer-after-producer');
 assert.ok(minimalMove.moves.length>0);
-const unknownDurationMove=optimizeSequence({skills:optimizerSkills,currentOrder:['producer','ultimate','consumer'],events:[{type:'cast',skillId:'producer',at:1000},{type:'cast',skillId:'ultimate',at:2000},{type:'cast',skillId:'consumer',at:3000}]});
-assert.deepStrictEqual(unknownDurationMove.order,['producer','consumer','ultimate'],'지속시간이 없는 조건 효과는 안전하게 부여 도술 바로 뒤에서 소비해야 합니다.');
+const unknownDurationSkills=optimizerSkills.map(value=>value.id==='producer'?{...value,timingEffects:{}}:value);
+const unknownDurationMove=optimizeSequence({skills:unknownDurationSkills,currentOrder:['producer','ultimate','consumer'],events:[{type:'cast',skillId:'producer',at:1000},{type:'cast',skillId:'ultimate',at:2000},{type:'cast',skillId:'consumer',at:3000}]});
+assert.deepStrictEqual(unknownDurationMove.order,['producer','ultimate','consumer'],'지속시간을 모르면 추정으로 순서를 변경하면 안 됩니다.');
+const previousCycleSuccess=optimizeSequence({skills:optimizerSkills,currentOrder:['consumer','producer','ultimate'],events:[{type:'cast',skillId:'producer',at:1000},{type:'cast',skillId:'consumer',at:7000},{type:'cast',skillId:'ultimate',at:8000}],startedAt:0,endedAt:9000});
+assert.deepStrictEqual(previousCycleSuccess.order,['consumer','producer','ultimate'],'현재 순서가 반대여도 이전 순환 효과 안에서 조건을 충족했다면 순서를 유지해야 합니다.');
 const healthOnly=optimizeSequence({skills:[{id:'health',name:'체력 조건',family:'시험',conditions:[{effect:'대상 체력 50% 이상',result:'피해 증가'}]}],currentOrder:['health'],events:[{type:'cast',skillId:'health',at:1000}]});
 assert.equal(healthOnly.relationships.length,0,'대상 체력 조건을 부여 도술이 필요한 상태 이상으로 분류하면 안 됩니다.');
 const buffFirst=optimizeSequence({skills:[{id:'hit',name:'공격',family:'시험',conditions:[]},{id:'buff',name:'용맹',family:'시험',buffs:['주는 피해 증가'],conditions:[]}],currentOrder:['hit','buff'],events:[{type:'cast',skillId:'hit',at:1000},{type:'cast',skillId:'buff',at:2000}]});
@@ -94,6 +97,12 @@ const timing=analyzeEffectTiming({skills:timedSkills,events:timedEvents,startedA
 assert.equal(timing.casts,1,'도술이 발동하면 감전도 발동한 것으로 계산해야 합니다.');
 assert.equal(timing.coveredConsumers,1,'감전 10초 안의 난타는 조건 적중으로 계산해야 합니다.');
 assert.equal(timing.missedConsumers,1,'감전이 종료된 후의 난타는 조건 미적중으로 계산해야 합니다.');
+const effectState=analyzeEffectState({skills:timedSkills,events:timedEvents,startedAt:0,endedAt:8000});
+assert.equal(effectState.activeEffects[0].effect,'감전','현재 시점에 유지 중인 약화를 반환해야 합니다.');
+assert.equal(effectState.conditions[0].covered,1,'조건 성공 횟수를 도술별로 집계해야 합니다.');
+assert.equal(effectState.conditions[0].missed,1,'조건 실패 횟수를 도술별로 집계해야 합니다.');
+assert.equal(effectState.conditions[0].recovered,1,'순서 복원 발동은 별도 근거 수로 보존해야 합니다.');
+assert.equal(effectState.attempts[0].remainingMs,4000,'조건 성공 시 남은 효과 시간을 기록해야 합니다.');
 const timedOptimized=optimizeSequence({skills:timedSkills,events:timedEvents,startedAt:1000,endedAt:15000});
 assert.equal(timedOptimized.basicAttacks,2);
 assert.ok(timedOptimized.basicShare>0);

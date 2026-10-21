@@ -1,6 +1,6 @@
 {
   "name": "dokkaebi-live-analyzer",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "게임 화면에서 스킬 슬롯과 실제 사용 효율을 실시간으로 분석하는 Windows 앱",
   "main": "src/main.cjs",
   "author": "iannamkr",

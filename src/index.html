@@ -80,11 +80,21 @@
           <article><small>초당 피해</small><strong id="metric-dps">—</strong><span id="metric-dps-sub">피해 측정기 대기</span></article>
           <article><small>지연 도술</small><strong id="metric-breaks">0개</strong><span id="metric-breaks-sub">사용 감지 대기</span></article>
         </div>
+        <section class="active-effect-panel">
+          <div class="active-effect-heading"><strong>현재 활성 효과</strong><span>발동 로그 기준</span></div>
+          <div id="active-effects" class="active-effects"><p>강화·약화 효과 발동을 기다리고 있습니다.</p></div>
+          <div id="live-condition-rates" class="live-condition-rates"></div>
+        </section>
         <div class="finding-list" id="findings">
           <article class="finding neutral"><i>◎</i><div><strong>실전 분석 준비 중</strong><p>게임 창을 연결하면 슬롯을 찾고 사용 기록을 시작합니다.</p></div></article>
         </div>
       </aside>
     </div>
+
+    <section class="effect-timeline-panel panel">
+      <div class="panel-heading compact"><div><small>최근 30초 · 발동 로그 기준</small><h2>강화·약화 효과 타임라인</h2></div><div class="effect-legend"><span><i class="buff-key"></i>내 강화</span><span><i class="debuff-key"></i>적 약화</span><span><i class="success-key"></i>조건 성공</span><span><i class="miss-key"></i>조건 실패</span></div></div>
+      <div id="effect-timeline" class="effect-timeline empty-effect-timeline"><p>지속시간이 확인된 강화·약화 효과가 발동하면 표시합니다.</p></div>
+    </section>
 
     <section class="timeline-panel panel">
       <div class="panel-heading compact"><div><small>최근 30초</small><h2>실제 사용 타임라인</h2></div><span id="timeline-now">00:00</span></div>
@@ -127,6 +137,7 @@
       <div class="dialog-heading"><div><small>측정 데이터 분석</small><h2>추천 사용 순서</h2><p id="result-summary">실제 사용 로그와 피해 측정기 값을 기준으로 계산했습니다.</p></div><button value="cancel" class="icon-button" aria-label="닫기">×</button></div>
       <section class="action-plan-panel"><div class="slot-section-heading"><strong>지금 바꿀 내용</strong><span>측정값으로 확인된 필요한 변경만 보여줍니다.</span></div><div id="action-plan" class="action-plan"></div></section>
       <div id="recommended-order" class="recommended-order"></div>
+      <section class="condition-result-panel"><div class="slot-section-heading"><strong>조건부 효과 실측 결과</strong><span>판정 가능한 사용만 성공률에 포함합니다.</span></div><div id="condition-result-findings" class="condition-result-findings"></div><div id="result-effect-timeline" class="effect-timeline result-effect-timeline"></div></section>
       <section class="effect-result-panel"><div class="slot-section-heading"><strong>강화·약화 연계 판정</strong><span>도술 발동 시 효과도 확정 발동한 것으로 계산합니다.</span></div><div id="effect-timing-findings" class="effect-timing-findings"></div></section>
       <div id="recommendation-reasons" class="recommendation-reasons"></div>
       <div class="result-note">게임은 도술을 순서대로 발동하고 해당 효과는 회피되지 않는다는 조건으로 계산합니다. 상태 아이콘 OCR 누락과 무관하게 도술 발동 시각부터 강화·약화 지속시간을 계산합니다.</div>

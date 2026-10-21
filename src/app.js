@@ -46,6 +46,7 @@ const api = window.desktopAPI || {
   setAlwaysOnTop: async () => false,
   openExternal: url => window.open(url, '_blank'),
   optimizeSequence: () => ({order:[],rows:[],casts:0,durationMs:0}),
+  analyzeEffectState: () => ({windows:[],attempts:[],conditions:[],activeEffects:[]}),
   advanceSlotDetector: (previous,feature,now) => ({state:{...(previous||{}),feature,luma:feature.luma,at:now},cast:false})
 };
 
@@ -81,6 +82,11 @@ function effectChips(id, includeConditions=true) {
   effects.debuffs.forEach(name=>items.push(`<span class="effect-chip debuff">약화 · ${escapeHtml(name)}</span>`));
   if(includeConditions)effects.conditions.forEach(value=>items.push(`<span class="effect-chip condition">조건 · ${escapeHtml(value.effect)}</span>`));
   return items.length?`<div class="effect-stack">${items.join('')}</div>`:'—';
+}
+
+function effectAnalysis(endedAt=Date.now()) {
+  if(!state.build)return {windows:[],attempts:[],conditions:[],activeEffects:[]};
+  return api.analyzeEffectState({skills:state.build.skills.map(id=>skillAtStage(id)),events:state.events,startedAt:state.startedAt,endedAt});
 }
 
 function setDetectedBuild(skills, keys, confidence) {
@@ -175,6 +181,10 @@ function renderBuild() {
     $('#build-status').textContent = '일반 도술 8개와 궁극기 1개를 자동으로 찾습니다.';
     $('#detect-confidence').textContent = state.stream ? '감지 중' : '대기';
     $('#detect-step').classList.remove('ready');
+    $('#active-effects').innerHTML='<p>강화·약화 효과 발동을 기다리고 있습니다.</p>';
+    $('#live-condition-rates').innerHTML='';
+    $('#effect-timeline').className='effect-timeline empty-effect-timeline';
+    $('#effect-timeline').innerHTML='<p>지속시간이 확인된 강화·약화 효과가 발동하면 표시합니다.</p>';
     return;
   }
   host.className = 'deck-slots';
@@ -214,8 +224,54 @@ function report() {
   return { casts:casts.length, rows };
 }
 
+function effectKey(value){return String(value||'').replace(/\s+/g,'').toLowerCase();}
+function formatTimelineSecond(value){const seconds=Math.max(0,Math.round(value/1000));return seconds>=60?`${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`:`${seconds}초`;}
+
+function effectTimelineMarkup(analysis,start,end,live=false){
+  const duration=Math.max(1000,end-start),groups=new Map();
+  for(const window of analysis.windows||[]){
+    if(window.end<start||window.start>end)continue;
+    const key=effectKey(window.effect);
+    if(!groups.has(key))groups.set(key,{effect:window.effect,kind:window.kind,windows:[],attempts:[]});
+    groups.get(key).windows.push(window);
+  }
+  for(const attempt of analysis.attempts||[]){
+    if(attempt.at<start||attempt.at>end)continue;
+    const key=effectKey(attempt.effect);
+    if(!groups.has(key))groups.set(key,{effect:attempt.effect,kind:'debuff',windows:[],attempts:[]});
+    groups.get(key).attempts.push(attempt);
+  }
+  if(!groups.size)return '<p class="empty-effect-result">판정 가능한 강화·약화 발동 기록이 아직 없습니다.</p>';
+  const rows=[...groups.values()].sort((a,b)=>(a.kind==='buff'?0:1)-(b.kind==='buff'?0:1)||a.effect.localeCompare(b.effect,'ko')).map(group=>{
+    const producers=[...new Set(group.windows.map(value=>value.producerName).filter(Boolean))];
+    const windows=group.windows.map(window=>{
+      const from=Math.max(start,window.start),to=Math.min(end,window.end),left=(from-start)/duration*100,width=Math.max(.3,(to-from)/duration*100),remaining=Math.max(0,window.end-end);
+      const title=`${window.effect} · ${window.producerName} · ${window.duration}초${window.evidence==='sequence'?' · 순서 복원':' · 직접 감지'}`;
+      return `<span class="effect-window ${window.kind==='debuff'?'debuff':''} ${window.evidence==='sequence'?'recovered':''}" style="left:${left.toFixed(3)}%;width:${width.toFixed(3)}%" title="${escapeHtml(title)}">${remaining>0?`${(remaining/1000).toFixed(1)}초`:''}</span>`;
+    }).join('');
+    const attempts=group.attempts.map(attempt=>{const left=(attempt.at-start)/duration*100,title=`${attempt.consumerName} × ${attempt.effect} · ${attempt.status==='success'?`성공${attempt.remainingMs!=null?` · ${(attempt.remainingMs/1000).toFixed(1)}초 남음`:''}`:attempt.status==='miss'?'실패':'판정 불가'}${attempt.evidence==='sequence'?' · 순서 복원':' · 직접 감지'}`;return `<span class="condition-marker ${attempt.status}" style="left:${left.toFixed(3)}%" title="${escapeHtml(title)}">${attempt.status==='success'?'✓':attempt.status==='miss'?'!':'?'}</span>`;}).join('');
+    return `<div class="effect-row"><div class="effect-row-label"><i class="${group.kind==='debuff'?'debuff':''}"></i><div><b>${escapeHtml(group.effect)}</b><small>${group.kind==='buff'?'내 강화':'적 약화'}${producers.length?` · ${escapeHtml(producers.join('·'))}`:''}</small></div></div><div class="effect-row-track">${windows}${attempts}</div></div>`;
+  }).join('');
+  const axis=live?'<span>-30초</span><span>-20초</span><span>-10초</span><span>현재</span>':`<span>0초</span><span>${formatTimelineSecond(duration/3)}</span><span>${formatTimelineSecond(duration*2/3)}</span><span>${formatTimelineSecond(duration)}</span>`;
+  return `${rows}<div class="effect-axis">${axis}</div>`;
+}
+
+function renderLiveEffects(analysis,now=Date.now()){
+  const active=analysis.activeEffects||[];
+  $('#active-effects').innerHTML=active.length?active.map(value=>{const remaining=Math.max(0,value.end-now),progress=Math.max(0,Math.min(100,remaining/(value.duration*1000)*100));return `<article class="active-effect ${value.kind}"><b>${value.kind==='buff'?'강화':'약화'} · ${escapeHtml(value.effect)}</b><small>${(remaining/1000).toFixed(1)}초 남음 · ${escapeHtml(value.producerName)}${value.evidence==='sequence'?' · 순서 복원':''}</small><div class="effect-countdown"><i style="width:${progress.toFixed(1)}%"></i></div></article>`;}).join(''):'<p>현재 유지 중인 지속시간 확인 효과가 없습니다.</p>';
+  const conditions=(analysis.conditions||[]).filter(value=>value.total||value.unknown);
+  $('#live-condition-rates').innerHTML=conditions.map(value=>`<div class="live-condition-rate ${value.missed?'miss':''}"><b>${escapeHtml(value.consumerName)} × ${escapeHtml(value.effect)}</b><span>${value.total?`${value.covered}/${value.total}회 · ${Math.round(value.rate)}%`:`판정 불가 ${value.unknown}회`}</span></div>`).join('');
+}
+
+function renderEffectTimeline(analysis,now=Date.now()){
+  const start=now-30000,host=$('#effect-timeline');
+  host.className='effect-timeline';
+  host.innerHTML=effectTimelineMarkup(analysis,start,now,true);
+}
+
 function renderReport() {
   const r = report();
+  const now=Date.now(),effects=effectAnalysis(now);
   $('#metric-match').textContent = `${state.slotMap.size}/9`;
   $('#metric-match-sub').textContent = state.build ? '사용자가 실제 슬롯 확인' : state.pendingSlots.length===9 ? '자동 후보 확인 필요' : '스킬 슬롯 감지 중';
   $('#metric-casts').textContent = `${r.casts}회`;
@@ -230,12 +286,14 @@ function renderReport() {
   $('#metric-dps').textContent = state.ocr.dps == null ? '—' : fmt(state.ocr.dps);
   $('#metric-dps-sub').textContent = state.ocr.dps == null ? '피해 측정기 인식 대기' : `누적 ${fmt(state.ocr.total)}`;
   $('#timeline-now').textContent = $('#metric-casts-sub').textContent;
-  renderFindings(r);
+  renderFindings(r,effects);
+  renderLiveEffects(effects,now);
+  renderEffectTimeline(effects,now);
   renderTimeline();
   renderEfficiency(r);
 }
 
-function renderFindings(r) {
+function renderFindings(r,effects=effectAnalysis()) {
   const list = [];
   if (!r.casts) list.push({kind:'neutral',icon:'◎',title:'실전 사용 감지 중',body:'스킬 아이콘의 준비 상태가 재사용 대기 상태로 바뀌는 순간을 사용으로 기록합니다.'});
   if (state.build) list.push({kind:'good',icon:'✓',title:'스킬 슬롯 사용자 확인 완료',body:'직접 확인한 일반 도술 8개와 궁극기 1개를 기준으로 분석합니다.'});
@@ -243,6 +301,8 @@ function renderFindings(r) {
   if(recovered)list.push({kind:'warn',icon:'↺',title:`감지 누락 ${recovered}회 자동 복원`,body:'확정한 사용 순서와 재사용 시간을 기준으로 직접 감지되지 않은 발동을 복원해 효율 계산에 포함했습니다.'});
   const delayed = r.rows.filter(row => row.count >= 2 && row.utilization != null && row.utilization < 70).sort((a,b)=>a.utilization-b.utilization)[0];
   if (delayed) list.push({kind:'warn',icon:'△',title:`${delayed.name} 재사용 지연`,body:`기본 재사용 ${delayed.cooldown.toFixed(1)}초보다 실제 평균 사용 간격 ${delayed.meanInterval.toFixed(1)}초가 깁니다.`});
+  const missed=(effects.conditions||[]).filter(value=>value.missed>0).sort((a,b)=>b.missed-a.missed)[0];
+  if(missed)list.push({kind:'warn',icon:'!',title:`${missed.consumerName} · ${missed.effect} 조건 ${missed.missed}회 실패`,body:`판정 가능 ${missed.total}회 중 ${missed.covered}회 충족했습니다. 측정 완료 후 실패 시점을 확인하세요.`});
   if (state.ocr.dps != null) list.push({kind:'good',icon:'↗',title:`실측 초당 피해 ${fmt(state.ocr.dps)}`,body:'게임 내 피해 측정기 값을 읽었습니다. 도술별 행은 아이콘과 함께 계속 갱신합니다.'});
   $('#findings').innerHTML = list.slice(0,4).map(item=>`<article class="finding ${item.kind}"><i>${item.icon}</i><div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.body)}</p></div></article>`).join('');
 }
@@ -274,6 +334,13 @@ function renderRecommendation(result) {
   $('#recommended-order').innerHTML = result.rows.map((row,index)=>{const before=state.currentOrder.indexOf(row.id),movement=before>=0&&before!==index?` · ${before+1}→${index+1}`:'';return `<article class="recommend-card"><strong>${index+1}</strong><img src="${iconUrl(row.id)}" alt=""><b>${escapeHtml(row.name)}</b><small>${escapeHtml(row.family)}${row.breakthroughStage?` · 돌파 ${row.breakthroughStage}`:''}${row.ultimate?' · 궁극기':''}${movement}</small></article>`}).join('');
   $('#recommendation-reasons').innerHTML = result.rows.map((row,index)=>`<article class="reason-card"><strong>${index+1}. ${escapeHtml(row.name)}</strong>${effectChips(row.id)}<p>${escapeHtml(row.reasons.join(' · '))}</p></article>`).join('');
   renderActionPlan(result);
+  const conditions=result.conditionTiming||[];
+  $('#condition-result-findings').innerHTML=conditions.length?conditions.map(item=>{
+    const unknown=!item.total,tone=unknown?'unknown':item.missed?'miss':'good',remaining=item.meanRemainingMs!=null?` · 성공 시 평균 ${(item.meanRemainingMs/1000).toFixed(1)}초 남음`:'';
+    return `<article class="condition-result-card ${tone}"><strong>${escapeHtml(item.consumerName)} × ${escapeHtml(item.effect)}</strong><b>${item.total?`${item.covered}/${item.total}회 · ${Math.round(item.rate)}%`:`판정 불가 ${item.unknown}회`}</b><p>${item.total?`실패 ${item.missed}회${remaining} · 직접 감지 ${item.direct}회 · 순서 복원 ${item.recovered}회`:'검증된 지속시간 또는 부여 도술이 없어 성공률에서 제외했습니다.'}</p></article>`;
+  }).join(''):'<p class="empty-effect-result">현재 덱에는 시간 판정이 필요한 조건부 도술이 없습니다.</p>';
+  const resultStart=state.startedAt||Math.min(...(result.effectState?.windows||[]).map(value=>value.start),Date.now()),resultEnd=result.finishedAt||Date.now();
+  $('#result-effect-timeline').innerHTML=effectTimelineMarkup(result.effectState||{windows:[],attempts:[]},resultStart,resultEnd,false);
   const timed=(result.effectTiming||[]).filter(item=>item.casts>0);
   $('#effect-timing-findings').innerHTML=timed.length?timed.map(item=>{
     if(!item.known)return `<article class="effect-timing-card unknown"><strong>${escapeHtml(item.skillName)} → ${escapeHtml(item.effect)}</strong><b>${item.casts}회 발동 확정</b><p>지속시간이 없어 시간 연계 판정만 제외했습니다.</p></article>`;
@@ -311,6 +378,7 @@ function finishMeasurement() {
   $('#analysis-subtitle').textContent='관측 데이터로 추천 순서를 계산했습니다.';
   const endedAt=Date.now();
   const result=api.optimizeSequence({skills:state.build.skills.map(id=>skillAtStage(id)),events:state.events,damageRows:state.ocr.rows,startedAt:state.startedAt,endedAt,currentOrder:state.currentOrder});
+  result.finishedAt=endedAt;
   if(state.startedAt)result.durationMs=Math.max(0,Date.now()-state.startedAt);
   renderRecommendation(result);
   $('#result-dialog').showModal();

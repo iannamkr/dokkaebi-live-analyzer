@@ -175,6 +175,61 @@ function effectNames(skill) {
 function normalizeEffect(value) { return String(value || '').replace(/\s+/g,'').toLowerCase(); }
 function isStateCondition(value){return /(감전|화상|파쇄|기세|낙인|출혈|충격|관통|파열|원소|질풍|빙결|속박|기절|마비|중독|수면|경직)/.test(String(value||''));}
 
+function analyzeEffectState({ skills = [], events = [], startedAt = 0, endedAt = 0 }) {
+  const ids=new Set(skills.map(value=>value.id));
+  const casts=events.filter(event=>event?.type==='cast'&&ids.has(event.skillId)).sort((a,b)=>a.at-b.at);
+  const now=endedAt||casts.at(-1)?.at||startedAt||0;
+  const definitions=[];
+  for(const value of skills){
+    const effects=effectNames(value),buffs=new Set(effects.buffs.map(normalizeEffect)),debuffs=new Set(effects.debuffs.map(normalizeEffect));
+    const timingByName=new Map(effects.timings.map(item=>[normalizeEffect(item.name),item]));
+    const names=[...new Set([...effects.buffs,...effects.debuffs,...effects.timings.map(item=>item.name)])];
+    for(const name of names){
+      const key=normalizeEffect(name),timing=timingByName.get(key);
+      definitions.push({effect:name,key,kind:debuffs.has(key)?'debuff':buffs.has(key)?'buff':'effect',producerId:value.id,producerName:value.name,duration:Number(timing?.duration||0),application:timing?.application||''});
+    }
+  }
+  const windows=[];
+  for(const definition of definitions.filter(value=>value.duration>0)){
+    for(const event of casts.filter(value=>value.skillId===definition.producerId)){
+      windows.push({...definition,start:event.at,end:event.at+definition.duration*1000,evidence:event.evidence||'visual'});
+    }
+  }
+  windows.sort((a,b)=>a.start-b.start);
+  const attempts=[];
+  for(const consumer of skills){
+    for(const condition of effectNames(consumer).conditions){
+      if(!isStateCondition(condition.effect))continue;
+      const key=normalizeEffect(condition.effect),matching=definitions.filter(value=>value.key===key),known=matching.some(value=>value.duration>0);
+      for(const event of casts.filter(value=>value.skillId===consumer.id)){
+        const active=known?windows.filter(value=>value.key===key&&event.at>=value.start&&event.at<=value.end).sort((a,b)=>b.end-a.end)[0]:null;
+        attempts.push({consumerId:consumer.id,consumerName:consumer.name,effect:condition.effect,result:condition.result,at:event.at,evidence:event.evidence||'visual',status:!matching.length?'missing-producer':!known?'unknown-duration':active?'success':'miss',remainingMs:active?Math.max(0,active.end-event.at):null,producerId:active?.producerId||matching[0]?.producerId||null,producerName:active?.producerName||matching[0]?.producerName||null});
+      }
+    }
+  }
+  const grouped=new Map();
+  for(const attempt of attempts){
+    const key=`${attempt.consumerId}|${normalizeEffect(attempt.effect)}`;
+    if(!grouped.has(key))grouped.set(key,{consumerId:attempt.consumerId,consumerName:attempt.consumerName,effect:attempt.effect,result:attempt.result,producerId:attempt.producerId,producerName:attempt.producerName,total:0,covered:0,missed:0,unknown:0,direct:0,recovered:0,remainingTotalMs:0,knownDuration:false,duration:null});
+    const row=grouped.get(key);
+    if(attempt.status==='success'||attempt.status==='miss'){
+      row.total+=1;row.knownDuration=true;
+      if(attempt.status==='success'){row.covered+=1;row.remainingTotalMs+=Number(attempt.remainingMs||0);}else row.missed+=1;
+      if(attempt.evidence==='sequence')row.recovered+=1;else row.direct+=1;
+    }else row.unknown+=1;
+  }
+  const conditions=[...grouped.values()].map(row=>{
+    const definition=definitions.find(value=>value.key===normalizeEffect(row.effect)&&value.producerId===row.producerId)||definitions.find(value=>value.key===normalizeEffect(row.effect));
+    return {...row,duration:definition?.duration||null,rate:row.total?row.covered/row.total*100:null,meanRemainingMs:row.covered?row.remainingTotalMs/row.covered:null};
+  });
+  const activeByEffect=new Map();
+  for(const window of windows.filter(value=>now>=value.start&&now<=value.end)){
+    const key=`${window.kind}|${window.key}`,previous=activeByEffect.get(key);
+    if(!previous||window.end>previous.end)activeByEffect.set(key,window);
+  }
+  return { windows, attempts, conditions, activeEffects:[...activeByEffect.values()].sort((a,b)=>a.end-b.end) };
+}
+
 function analyzeEffectTiming({ skills = [], events = [], startedAt = 0, endedAt = 0 }) {
   const ids=new Set(skills.map(value=>value.id));
   const casts=events.filter(event=>event?.type==='cast'&&ids.has(event.skillId)).sort((a,b)=>a.at-b.at);
@@ -220,6 +275,7 @@ function optimizeSequence({ skills, events = [], damageRows = [], startedAt = 0,
     value.times.push(event.at);
   }
   const effectTiming=analyzeEffectTiming({skills,events,startedAt,endedAt});
+  const effectState=analyzeEffectState({skills,events,startedAt,endedAt});
   const rawRows = skills.map(skill => {
     const observed = perSkill.get(skill.id);
     const intervals = observed.times.slice(1).map((at,index)=>(at-observed.times[index])/1000);
@@ -268,18 +324,20 @@ function optimizeSequence({ skills, events = [], damageRows = [], startedAt = 0,
       if (!producer) {if(isStateCondition(condition.effect))relationships.push({effect:condition.effect,consumerId:consumer.id,consumerName:consumer.name,producerId:null,producerName:null,covered:0,missed:null,total:0,action:'producer-missing'});continue;}
       const producerIndex=ordered.indexOf(producer),consumerIndex=ordered.indexOf(consumer);
       const timing=producer.timing.find(item=>normalizeEffect(item.effect)===target&&item.known);
-      const needsMove=producerIndex>consumerIndex || (!timing&&consumerIndex-producerIndex>1) || Boolean(timing?.missedConsumers&&consumerIndex-producerIndex>1);
+      const measured=effectState.conditions.find(item=>item.consumerId===consumer.id&&normalizeEffect(item.effect)===target);
+      const hasMeasuredMiss=Boolean(measured?.missed);
+      const needsMove=Boolean(measured?.knownDuration&&hasMeasuredMiss&&(producerIndex>consumerIndex||consumerIndex-producerIndex>1));
       if (needsMove) {
         ordered.splice(ordered.indexOf(consumer),1);
         ordered.splice(ordered.indexOf(producer)+1,0,consumer);
       }
       consumer.reasons.unshift(`${condition.effect}${timing?` ${timing.duration}초 안에`: ' 이후'} ${condition.result} 조건 활용`);
-      relationships.push({effect:condition.effect,consumerId:consumer.id,consumerName:consumer.name,producerId:producer.id,producerName:producer.name,covered:timing?.coveredConsumers||0,missed:timing?.missedConsumers??null,total:timing?.consumerCasts||0,duration:timing?.duration||null,durationKnown:Boolean(timing),action:needsMove?'move-consumer-after-producer':'keep'});
+      relationships.push({effect:condition.effect,consumerId:consumer.id,consumerName:consumer.name,producerId:producer.id,producerName:producer.name,covered:measured?.covered||0,missed:measured?.knownDuration?measured.missed:null,total:measured?.total||0,rate:measured?.rate??null,meanRemainingMs:measured?.meanRemainingMs??null,duration:measured?.duration||timing?.duration||null,durationKnown:Boolean(measured?.knownDuration),action:needsMove?'move-consumer-after-producer':hasMeasuredMiss?'condition-failed':'keep'});
     }
   }
   const finalOrder=ordered.map(row=>row.id),basis=validCurrent?currentOrder:finalOrder;
   const moves=finalOrder.map((id,index)=>({id,name:rawRows.find(row=>row.id===id)?.name||id,from:basis.indexOf(id)+1,to:index+1})).filter(move=>move.from&&move.from!==move.to);
-  return { order:finalOrder, rows:ordered, casts:casts.length, durationMs:measurementMs||Math.max(0,lastAt-firstAt), effectTiming, relationships, moves, keptCurrentOrder:validCurrent, basicAttacks, basicShare:(basicAttacks+casts.length)?basicAttacks/(basicAttacks+casts.length)*100:0, basicPerMinute:measurementMs?basicAttacks/(measurementMs/60000):0 };
+  return { order:finalOrder, rows:ordered, casts:casts.length, durationMs:measurementMs||Math.max(0,lastAt-firstAt), effectTiming, effectState, conditionTiming:effectState.conditions, relationships, moves, keptCurrentOrder:validCurrent, basicAttacks, basicShare:(basicAttacks+casts.length)?basicAttacks/(basicAttacks+casts.length)*100:0, basicPerMinute:measurementMs?basicAttacks/(measurementMs/60000):0 };
 }
 
-module.exports = { cleanBuild, encodeBuild, decodeBuild, expectedOrder, sequenceReport, cooldownTransition, featureDistance, advanceSlotDetector, effectNames, analyzeEffectTiming, optimizeSequence };
+module.exports = { cleanBuild, encodeBuild, decodeBuild, expectedOrder, sequenceReport, cooldownTransition, featureDistance, advanceSlotDetector, effectNames, analyzeEffectTiming, analyzeEffectState, optimizeSequence };
