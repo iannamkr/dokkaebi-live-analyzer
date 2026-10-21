@@ -1,0 +1,65 @@
+name: Build latest Windows installer
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: latest-main-installer
+  cancel-in-progress: true
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run tests
+        run: pnpm test
+
+      - name: Build Windows installer
+        run: pnpm run dist
+
+      - name: Prepare stable download name
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path release -Filter '*-Setup-*.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'Windows installer was not created.' }
+          Copy-Item -LiteralPath $installer.FullName -Destination 'release\Dokkaebi-Live-Analyzer-Setup.exe' -Force
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dokkaebi-Live-Analyzer-Windows
+          path: release/Dokkaebi-Live-Analyzer-Setup.exe
+          if-no-files-found: error
+
+      - name: Replace latest release with this main build
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag
+          Write-Host 'Creating latest release for commit ${{ github.sha }}'
+          gh release create latest 'release\Dokkaebi-Live-Analyzer-Setup.exe' --target '${{ github.sha }}' --title '최신 main 설치 파일' --notes 'main 브랜치의 ${{ github.sha }} 커밋에서 자동으로 빌드한 Windows 설치 파일입니다.' --latest
+

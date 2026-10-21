@@ -1,0 +1,53 @@
+{
+  "name": "dokkaebi-live-analyzer",
+  "version": "0.1.6",
+  "description": "게임 화면에서 스킬 슬롯과 실제 사용 효율을 실시간으로 분석하는 Windows 앱",
+  "main": "src/main.cjs",
+  "author": "iannamkr",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/core.test.cjs",
+    "predist": "node scripts/clean-release.cjs",
+    "dist": "electron-builder --win nsis",
+    "postdist": "node scripts/prune-release.cjs",
+    "pack": "electron-builder --dir"
+  },
+  "build": {
+    "appId": "kr.iannam.dokkaebi.liveanalyzer",
+    "productName": "도깨비 실전 분석기",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "assets/app-icon.ico",
+      "artifactName": "도깨비-실전-분석기-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": false,
+      "deleteAppDataOnUninstall": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "도깨비 실전 분석기"
+    }
+  },
+  "devDependencies": {
+    "electron": "^44.9.1",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "@tesseract.js-data/eng": "^1.0.0",
+    "tesseract.js": "^7.0.0"
+  }
+}
