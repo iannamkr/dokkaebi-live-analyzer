@@ -12,12 +12,16 @@
       <img src="../assets/icon-512.png" alt="">
       <div><h1>도깨비 실전 분석기</h1><p>게임 화면에서 스킬 슬롯과 실제 전투를 실시간 분석</p></div>
     </div>
+    <nav class="app-tabs" aria-label="주요 화면">
+      <button id="live-tab" class="app-tab active" type="button">실시간 측정</button>
+      <button id="history-tab" class="app-tab" type="button">측정 히스토리 <span id="history-count">0</span></button>
+    </nav>
     <div class="header-actions">
       <label class="toggle"><input id="always-top" type="checkbox"><span></span>게임 위에 표시</label>
     </div>
   </header>
 
-  <main>
+  <main id="live-view" class="app-view">
     <section class="setup-strip" aria-label="분석 준비">
       <article class="setup-card" id="window-step">
         <span class="step-number">1</span>
@@ -112,6 +116,31 @@
     </section>
   </main>
 
+  <main id="history-view" class="app-view history-view" hidden>
+    <section class="history-heading">
+      <div><small>완료한 측정 기록</small><h2>측정 히스토리</h2><p>저장한 빌드를 다시 확인하고 두 측정의 실측 성능을 비교합니다.</p></div>
+      <div class="history-tools">
+        <label class="history-search"><span>⌕</span><input id="history-search" type="search" placeholder="빌드 이름·도술 검색"></label>
+        <label class="history-filter"><input id="history-favorites" type="checkbox"> 즐겨찾기만</label>
+        <button id="compare-history" class="primary" type="button" disabled>선택한 빌드 비교 <span id="compare-count">0</span></button>
+      </div>
+    </section>
+
+    <section class="history-panel panel">
+      <div class="history-table-wrap">
+        <table class="history-table">
+          <thead><tr><th>선택</th><th>측정 일시</th><th>빌드 이름</th><th>스킬 구성</th><th>측정 시간</th><th>실측 DPS</th><th>평타 비중</th><th>조건 적중률</th><th>지연 도술</th><th>메모</th><th aria-label="기록 관리"></th></tr></thead>
+          <tbody id="history-body"><tr><td colspan="11" class="empty-cell">완료한 측정이 아직 없습니다.</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="history-compare-panel" class="history-compare-panel panel" hidden>
+      <div class="panel-heading compact"><div><small>직접 측정된 값만 비교</small><h2>선택한 빌드 비교</h2></div><button id="close-history-compare" class="quiet" type="button">닫기</button></div>
+      <div class="table-wrap"><table class="compare-table"><thead id="compare-head"></thead><tbody id="compare-body"></tbody></table></div>
+    </section>
+  </main>
+
   <dialog id="source-dialog">
     <form method="dialog">
       <div class="dialog-heading"><div><small>실시간 관측 대상</small><h2>게임 창 선택</h2><p>현재 열려 있는 창 중 도깨비의 세계를 선택하세요.</p></div><button value="cancel" class="icon-button" aria-label="닫기">×</button></div>
@@ -142,6 +171,19 @@
       <div id="recommendation-reasons" class="recommendation-reasons"></div>
       <div class="result-note">게임은 도술을 순서대로 발동하고 해당 효과는 회피되지 않는다는 조건으로 계산합니다. 상태 아이콘 OCR 누락과 무관하게 도술 발동 시각부터 강화·약화 지속시간을 계산합니다.</div>
       <div class="dialog-footer"><button value="cancel">닫기</button><button id="continue-measurement" type="button" class="primary">추가 측정</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="history-detail-dialog" class="history-detail-dialog">
+    <form method="dialog">
+      <div class="dialog-heading history-detail-heading"><div><small>저장된 측정 결과</small><h2 id="history-detail-title">측정 상세</h2><p id="history-detail-summary"></p></div><button value="cancel" class="icon-button" aria-label="닫기">×</button></div>
+      <div id="history-detail-order" class="history-detail-order"></div>
+      <section class="history-detail-section"><div class="slot-section-heading"><strong>강화·약화 효과 타임라인</strong><span>저장된 발동 로그와 확인된 지속시간 기준</span></div><div id="history-detail-effects" class="effect-timeline history-detail-effects"></div></section>
+      <section class="history-detail-section"><div class="slot-section-heading"><strong>도술별 실측 결과</strong><span>게임 피해 측정기에 표시되지 않은 값은 계산하지 않습니다.</span></div><div class="table-wrap"><table><thead><tr><th>도술</th><th>사용</th><th>실측 피해</th><th>점유율</th><th>평균 간격</th><th>재사용 활용</th><th>판정</th></tr></thead><tbody id="history-detail-efficiency"></tbody></table></div></section>
+      <section class="history-detail-section"><div class="slot-section-heading"><strong>조건부 효과 결과</strong><span>판정 가능한 사용만 성공률에 포함합니다.</span></div><div class="table-wrap"><table><thead><tr><th>조건</th><th>성공</th><th>실패</th><th>적중률</th><th>성공 시 남은 시간</th><th>근거</th></tr></thead><tbody id="history-detail-conditions"></tbody></table></div></section>
+      <section class="history-detail-section"><div class="slot-section-heading"><strong>당시 추천 순서</strong><span>저장 당시 측정값으로 계산한 개선안</span></div><div class="table-wrap"><table><thead><tr><th>순서</th><th>도술</th><th>계열</th><th>기존 위치</th><th>추천 근거</th></tr></thead><tbody id="history-detail-recommendation"></tbody></table></div></section>
+      <section class="history-edit-section"><label>빌드 이름<input id="history-detail-name" maxlength="80"></label><label>메모<textarea id="history-detail-note" maxlength="500" rows="3"></textarea></label><label class="history-favorite-edit"><input id="history-detail-favorite" type="checkbox"> 즐겨찾기</label></section>
+      <div class="dialog-footer"><button id="delete-history-detail" type="button" class="danger">기록 삭제</button><span class="dialog-spacer"></span><button value="cancel">닫기</button><button id="save-history-detail" type="button" class="primary">변경 저장</button></div>
     </form>
   </dialog>
 

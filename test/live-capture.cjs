@@ -1,13 +1,17 @@
 const assert = require('assert');
+const fs = require('fs');
 const path = require('path');
 const { _electron:electron } = require('C:/Users/iannam/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
 
 (async()=>{
   const root=path.resolve(__dirname,'..');
+  const historyDirectory=path.join(root,'test-output',`live-history-${process.pid}`);
+  fs.mkdirSync(historyDirectory,{recursive:true});
+  const historyFile=path.join(historyDirectory,'history.json');
   const app=await electron.launch({
     executablePath:path.join(root,'node_modules','electron','dist','electron.exe'),
     args:[root],
-    env:{...process.env,DOKKAEBI_ANALYZER_ALLOW_MULTI:'1'}
+    env:{...process.env,DOKKAEBI_ANALYZER_ALLOW_MULTI:'1',DOKKAEBI_ANALYZER_HISTORY_FILE:historyFile}
   });
   const window=await app.firstWindow();
   await app.evaluate(async({BrowserWindow},file)=>{
@@ -78,6 +82,39 @@ const { _electron:electron } = require('C:/Users/iannam/.cache/codex-runtimes/co
   assert.ok(await window.locator('#result-effect-timeline .effect-row').count()>=2);
   assert.ok(await window.locator('.action-card').count()>=3);
   await window.screenshot({path:path.join(root,'test-output','measurement-result.png'),fullPage:true});
+  await window.waitForFunction(async()=>((await window.desktopAPI.listHistory()).length===1));
+  await window.locator('#continue-measurement').click();
+  await window.evaluate(()=>{state.running=false;cancelAnimationFrame(state.loopId);state.events.push({type:'basic',key:'Space',at:Date.now(),evidence:'visual'});});
+  await window.locator('#finish-measurement').click();
+  await window.locator('#result-dialog[open]').waitFor();
+  await window.waitForFunction(async()=>((await window.desktopAPI.listHistory()).length===1));
+  await window.locator('#result-dialog button[value="cancel"]').last().click();
+  await window.locator('#history-tab').click();
+  await window.locator('#history-view:not([hidden])').waitFor();
+  assert.equal(await window.locator('#history-body tr[data-history-id]').count(),1,'추가 측정은 같은 히스토리 행을 갱신해야 합니다.');
+  await window.locator('#history-body tr[data-history-id] td:nth-child(3)').evaluate(element=>element.click());
+  await window.locator('#history-detail-dialog[open]').waitFor();
+  assert.equal(await window.locator('#history-detail-order .history-order-skill').count(),9);
+  assert.ok(await window.locator('#history-detail-efficiency tr').count()>=9);
+  assert.match(await window.locator('#history-detail-conditions').textContent(),/난타.*감전/);
+  await window.screenshot({path:path.join(root,'test-output','history-detail.png'),fullPage:true});
+  await window.locator('#history-detail-dialog button[value="cancel"]').last().click();
+  await window.evaluate(async()=>{
+    const [original]=await window.desktopAPI.listHistory();
+    const copy=JSON.parse(JSON.stringify(original));
+    copy.id='comparison-missing-damage';copy.title='피해 측정기 미표시 비교';copy.createdAt+=1;copy.updatedAt+=1;
+    copy.measurement.ocr.dps=null;copy.measurement.ocr.rows=[];copy.result.basicShare=12;
+    await window.desktopAPI.saveHistory(copy);await loadHistory();
+  });
+  assert.equal(await window.locator('#history-body tr[data-history-id]').count(),2);
+  assert.match(await window.locator('#history-body').textContent(),/측정기 미표시/);
+  await window.locator('.history-select').nth(0).evaluate(element=>element.click());
+  await window.locator('.history-select').nth(1).evaluate(element=>element.click());
+  await window.locator('#compare-history').click();
+  assert.equal(await window.locator('#history-compare-panel').isVisible(),true);
+  assert.match(await window.locator('#compare-body').textContent(),/비교 불가/,'한쪽 실측값이 없으면 비교 불가로 표시해야 합니다.');
+  await window.screenshot({path:path.join(root,'test-output','history-table.png'),fullPage:true});
   await app.close();
+  fs.rmSync(historyDirectory,{recursive:true,force:true});
   console.log('live capture, effect display and measurement result passed',fps);
 })().catch(error=>{console.error(error);process.exit(1)});

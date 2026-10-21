@@ -1,8 +1,18 @@
 const { app, BrowserWindow, desktopCapturer, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { createHistoryStore } = require('./history.cjs');
 
 let mainWindow = null;
+let historyStore = null;
+
+function getHistoryStore() {
+  if (!historyStore) {
+    const file = process.env.DOKKAEBI_ANALYZER_HISTORY_FILE || path.join(app.getPath('userData'), 'measurement-history-v1.json');
+    historyStore = createHistoryStore(file);
+  }
+  return historyStore;
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -67,6 +77,12 @@ ipcMain.handle('settings:top', (_event, value) => {
   mainWindow.setAlwaysOnTop(Boolean(value), 'floating');
   return mainWindow.isAlwaysOnTop();
 });
+
+ipcMain.handle('history:list', () => getHistoryStore().list());
+ipcMain.handle('history:save', (_event, record) => getHistoryStore().save(record));
+ipcMain.handle('history:update', (_event, id, changes) => getHistoryStore().update(id, changes));
+ipcMain.handle('history:delete', (_event, id) => getHistoryStore().remove(id));
+ipcMain.handle('app:version', () => app.getVersion());
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

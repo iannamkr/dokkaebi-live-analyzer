@@ -34,6 +34,11 @@ const state = {
   ocrBusy: false,
   ocrWorker: null,
   lastOcr: 0,
+  appVersion: '',
+  history: [],
+  historySelected: new Set(),
+  historyRecordId: null,
+  historyDetailId: null,
   regions: {
     hotbar: { x: .746, y: .735, w: .238, h: .205 },
     meter: { x: .785, y: .055, w: .193, h: .305 }
@@ -44,6 +49,11 @@ const api = window.desktopAPI || {
   listSources: async () => [],
   getCatalog: () => fetch('../assets/data.json').then(response=>response.json()),
   setAlwaysOnTop: async () => false,
+  listHistory: async () => [],
+  saveHistory: async record => record,
+  updateHistory: async () => null,
+  deleteHistory: async () => false,
+  getAppVersion: async () => '',
   openExternal: url => window.open(url, '_blank'),
   optimizeSequence: () => ({order:[],rows:[],casts:0,durationMs:0}),
   analyzeEffectState: () => ({windows:[],attempts:[],conditions:[],activeEffects:[]}),
@@ -92,6 +102,7 @@ function effectAnalysis(endedAt=Date.now()) {
 function setDetectedBuild(skills, keys, confidence) {
   const signature = skills.join('|');
   if (state.build?.signature === signature) return;
+  state.historyRecordId = null;
   state.build = { schema:'dosul-detected-v1', name:'현재 게임 슬롯', skills, signature };
   state.skillKeys = new Map(skills.map((id, index) => [id, keys[index]]));
   state.detectionConfidence = confidence;
@@ -156,6 +167,8 @@ function applyConfirmedSlots() {
   const ids = orderedKeys.map(key=>byKey.get(key));
   const orderIds=$$('[data-order-position]').map(select=>select.value);
   if(orderIds.some(id=>!id)||new Set(orderIds).size!==9||orderIds.some(id=>!ids.includes(id))){$('#slot-validation').textContent='자동 사용 순서에도 선택한 9개 도술을 한 번씩 배치해 주세요.';return;}
+  state.historyRecordId=null;
+  state.events=[];
   state.currentOrder=orderIds;
   state.breakthroughStages=new Map(entries.map(entry=>[entry.id,stageByKey.get(entry.key)||0]));
   state.sequenceCursor=null;
@@ -369,7 +382,232 @@ function renderActionPlan(result){
   $('#action-plan').innerHTML=cards.map(card=>`<article class="action-card ${card.tone}"><small>${escapeHtml(card.label)}</small><strong>${escapeHtml(card.title)}</strong><p>${escapeHtml(card.body)}</p></article>`).join('');
 }
 
-function finishMeasurement() {
+function historyId() {
+  return globalThis.crypto?.randomUUID?.() || `measurement-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function formatHistoryDate(value) {
+  const date=new Date(Number(value||0));
+  if(Number.isNaN(date.getTime()))return '—';
+  return `${date.toLocaleDateString('ko-KR',{year:'numeric',month:'2-digit',day:'2-digit'})}<br><small>${date.toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})}</small>`;
+}
+
+function formatDuration(ms) {
+  const seconds=Math.max(0,Math.round(Number(ms||0)/1000)),minutes=Math.floor(seconds/60),rest=seconds%60;
+  return minutes?`${minutes}분 ${rest}초`:`${rest}초`;
+}
+
+function recordSkillMap(record) {
+  return new Map((record?.build?.skillSnapshots||[]).map(value=>[value.id,value]));
+}
+
+function recordSkill(record,id) {
+  return recordSkillMap(record).get(id)||skill(id)||{id,name:id,family:'—'};
+}
+
+function defaultHistoryTitle() {
+  const families=[...new Set((state.build?.skills||[]).map(id=>skill(id)).filter(value=>value&&!value.ultimate).map(value=>value.family))];
+  return families.length?`${families.slice(0,2).join('·')} 빌드`:'실전 측정';
+}
+
+function conditionSummary(record) {
+  const conditions=record?.result?.conditionTiming||[];
+  const covered=conditions.reduce((sum,value)=>sum+Number(value.covered||0),0);
+  const total=conditions.reduce((sum,value)=>sum+Number(value.total||0),0);
+  return {covered,total,rate:total?covered/total*100:null};
+}
+
+function delayedRows(record) {
+  return (record?.result?.rows||[]).filter(row=>row.count>=2&&row.utilization!=null&&row.utilization<70);
+}
+
+function cooldownUtilization(record) {
+  const values=(record?.result?.rows||[]).map(row=>Number(row.utilization)).filter(Number.isFinite);
+  return values.length?values.reduce((sum,value)=>sum+value,0)/values.length:null;
+}
+
+function createHistoryRecord(result,endedAt) {
+  const previous=state.history.find(item=>item.id===state.historyRecordId);
+  const breakthroughStages=Object.fromEntries(state.breakthroughStages.entries());
+  return {
+    schema:'dokkaebi-measurement-v1',
+    id:state.historyRecordId||historyId(),
+    createdAt:previous?.createdAt||endedAt,
+    updatedAt:endedAt,
+    title:previous?.title||defaultHistoryTitle(),
+    favorite:Boolean(previous?.favorite),
+    note:previous?.note||'',
+    appVersion:state.appVersion,
+    build:{
+      name:state.build.name,
+      signature:state.build.signature,
+      skills:[...state.build.skills],
+      currentOrder:[...state.currentOrder],
+      breakthroughStages,
+      skillSnapshots:state.build.skills.map(id=>skillAtStage(id))
+    },
+    measurement:{
+      startedAt:state.startedAt,
+      endedAt,
+      durationMs:result.durationMs,
+      events:state.events.map(value=>({...value})),
+      ocr:{total:state.ocr.total,dps:state.ocr.dps,rows:state.ocr.rows.map(value=>({...value})),updatedAt:state.ocr.updatedAt}
+    },
+    result:JSON.parse(JSON.stringify(result))
+  };
+}
+
+async function saveMeasurementHistory(result,endedAt) {
+  const saved=await api.saveHistory(createHistoryRecord(result,endedAt));
+  if(!saved)return;
+  state.historyRecordId=saved.id;
+  await loadHistory();
+  toast(state.history.filter(item=>item.id===saved.id).length?'측정 결과를 히스토리에 저장했습니다.':'측정 결과를 저장했습니다.');
+}
+
+function switchAppView(name) {
+  const history=name==='history';
+  $('#live-view').hidden=history;
+  $('#history-view').hidden=!history;
+  $('#live-tab').classList.toggle('active',!history);
+  $('#history-tab').classList.toggle('active',history);
+  if(history)loadHistory();
+}
+
+function historySkillStrip(record) {
+  const order=record.build?.currentOrder?.length?record.build.currentOrder:record.build?.skills||[];
+  return `<div class="history-skill-strip">${order.map((id,index)=>{const value=recordSkill(record,id);return `<span class="history-skill" title="${escapeHtml(value.name)}"><img src="${iconUrl(id)}" alt=""><small>${index+1}</small></span>`;}).join('')}</div>`;
+}
+
+function measuredOrMissing(value,suffix='') {
+  return value==null?'<span class="unmeasured">측정기 미표시</span>':`<span class="measured-value">${fmt(value)}${suffix}</span>`;
+}
+
+function renderHistory() {
+  const query=$('#history-search').value.trim().toLocaleLowerCase('ko'),favorites=$('#history-favorites').checked;
+  const records=state.history.filter(record=>{
+    if(favorites&&!record.favorite)return false;
+    const names=(record.build?.skillSnapshots||[]).map(value=>value.name).join(' ');
+    return !query||`${record.title} ${record.note||''} ${names}`.toLocaleLowerCase('ko').includes(query);
+  });
+  $('#history-count').textContent=state.history.length;
+  const body=$('#history-body');
+  if(!records.length){body.innerHTML=`<tr><td colspan="11" class="empty-cell">${state.history.length?'검색 조건에 맞는 측정이 없습니다.':'완료한 측정이 아직 없습니다.'}</td></tr>`;return;}
+  body.innerHTML=records.map(record=>{
+    const condition=conditionSummary(record),delayed=delayedRows(record),selected=state.historySelected.has(record.id),dps=record.measurement?.ocr?.dps;
+    return `<tr data-history-id="${escapeHtml(record.id)}" class="${selected?'selected':''}"><td><input class="history-select" type="checkbox" aria-label="비교 선택" ${selected?'checked':''}></td><td>${formatHistoryDate(record.measurement?.endedAt||record.updatedAt)}</td><td class="history-title-cell"><b>${escapeHtml(record.title)}</b><small>${record.favorite?'★ 즐겨찾기':`앱 ${escapeHtml(record.appVersion||'—')}`}</small></td><td>${historySkillStrip(record)}</td><td>${formatDuration(record.measurement?.durationMs)}</td><td>${measuredOrMissing(dps)}</td><td><span class="measured-value">${Math.round(Number(record.result?.basicShare||0))}%</span></td><td>${condition.rate==null?'<span class="history-muted">판정 불가</span>':`<span class="measured-value">${Math.round(condition.rate)}%</span><small class="history-muted"> ${condition.covered}/${condition.total}회</small>`}</td><td>${delayed.length?escapeHtml(delayed.slice(0,2).map(value=>value.name).join(', ')):'없음'}</td><td class="history-note">${escapeHtml(record.note||'—')}</td><td><button type="button" class="favorite-button ${record.favorite?'active':''}" aria-label="즐겨찾기">★</button></td></tr>`;
+  }).join('');
+  body.querySelectorAll('[data-history-id]').forEach(row=>{
+    const id=row.dataset.historyId;
+    row.onclick=event=>{if(event.target.closest('input,button'))return;openHistoryDetail(id);};
+    row.querySelector('.history-select').onchange=event=>selectHistory(id,event.target.checked);
+    row.querySelector('.favorite-button').onclick=()=>toggleHistoryFavorite(id);
+  });
+}
+
+function selectHistory(id,checked) {
+  if(checked&&state.historySelected.size>=2){toast('비교할 측정은 두 개까지 선택할 수 있습니다.');renderHistory();return;}
+  if(checked)state.historySelected.add(id);else state.historySelected.delete(id);
+  const count=state.historySelected.size;
+  $('#compare-count').textContent=count;
+  $('#compare-history').disabled=count!==2;
+  if(count!==2)$('#history-compare-panel').hidden=true;
+  renderHistory();
+}
+
+async function toggleHistoryFavorite(id) {
+  const record=state.history.find(item=>item.id===id);if(!record)return;
+  await api.updateHistory(id,{favorite:!record.favorite});
+  await loadHistory();
+}
+
+async function loadHistory() {
+  try{
+    state.history=await api.listHistory();
+    const valid=new Set(state.history.map(item=>item.id));
+    state.historySelected=new Set([...state.historySelected].filter(id=>valid.has(id)));
+    $('#compare-count').textContent=state.historySelected.size;
+    $('#compare-history').disabled=state.historySelected.size!==2;
+    renderHistory();
+  }catch(error){toast(`히스토리를 불러오지 못했습니다: ${error.message}`);}
+}
+
+function detailUnmeasured() {
+  return '<span class="unmeasured">측정기 미표시</span>';
+}
+
+function openHistoryDetail(id) {
+  const record=state.history.find(item=>item.id===id);if(!record)return;
+  state.historyDetailId=id;
+  const condition=conditionSummary(record),dps=record.measurement?.ocr?.dps;
+  $('#history-detail-title').textContent=record.title;
+  $('#history-detail-summary').textContent=`${new Date(record.measurement.endedAt).toLocaleString('ko-KR')} · ${formatDuration(record.measurement.durationMs)} · 도술 ${record.result.casts||0}회 · 평타 ${record.result.basicAttacks||0}회${dps!=null?` · 실측 DPS ${fmt(dps)}`:' · DPS 측정기 미표시'}`;
+  const order=record.build.currentOrder?.length?record.build.currentOrder:record.build.skills;
+  $('#history-detail-order').innerHTML=order.map((skillId,index)=>{const value=recordSkill(record,skillId),stage=Number(record.build.breakthroughStages?.[skillId]||0);return `<div class="history-order-skill"><strong>${index+1}</strong><img src="${iconUrl(skillId)}" alt=""><div><b>${escapeHtml(value.name)}</b><small>${escapeHtml(value.family)}${stage?` · 돌파 ${stage}`:''}${value.ultimate?' · 궁극기':''}</small></div></div>`;}).join('');
+  $('#history-detail-effects').innerHTML=effectTimelineMarkup(record.result.effectState||{windows:[],attempts:[]},record.measurement.startedAt,record.measurement.endedAt,false);
+  const damageRows=record.measurement.ocr?.rows||[];
+  $('#history-detail-efficiency').innerHTML=(record.result.rows||[]).map(row=>{const actual=damageRows.find(value=>value.skillId===row.id),verdict=row.count<2?['관측 중','']:row.utilization>=85?['원활','good']:row.utilization>=65?['지연','warn']:['낭비 큼','warn'];return `<tr><td><div class="skill-cell"><img src="${iconUrl(row.id)}" alt=""><div><b>${escapeHtml(row.name)}</b><small>${escapeHtml(row.family)}</small></div></div></td><td>${row.count}회${row.inferredCount?`<small class="inferred-count">복원 ${row.inferredCount}</small>`:''}</td><td>${actual?fmt(actual.damage):detailUnmeasured()}</td><td>${actual&&actual.share!=null?`${actual.share.toFixed(1)}%`:detailUnmeasured()}</td><td>${row.meanInterval?`${row.meanInterval.toFixed(1)}초`:'—'}</td><td>${row.utilization==null?'—':`${Math.round(row.utilization)}%`}</td><td><span class="judgement ${verdict[1]}">${verdict[0]}</span></td></tr>`;}).join('');
+  const conditions=record.result.conditionTiming||[];
+  $('#history-detail-conditions').innerHTML=conditions.length?conditions.map(item=>`<tr><td><b>${escapeHtml(item.consumerName)} × ${escapeHtml(item.effect)}</b></td><td>${item.total?`${item.covered}회`:'판정 불가'}</td><td>${item.total?`${item.missed}회`:'—'}</td><td>${item.total?`${Math.round(item.rate)}%`:'비교 불가'}</td><td>${item.meanRemainingMs!=null?`${(item.meanRemainingMs/1000).toFixed(1)}초`:'—'}</td><td>직접 ${item.direct||0}회 · 순서 복원 ${item.recovered||0}회</td></tr>`).join(''):'<tr><td colspan="6" class="empty-cell">시간 판정이 필요한 조건부 도술이 없습니다.</td></tr>';
+  $('#history-detail-recommendation').innerHTML=(record.result.rows||[]).map((row,index)=>{const before=(record.build.currentOrder||[]).indexOf(row.id);return `<tr><td><b>${index+1}</b></td><td><div class="skill-cell"><img src="${iconUrl(row.id)}" alt=""><b>${escapeHtml(row.name)}</b></div></td><td>${escapeHtml(row.family)}</td><td>${before<0?'—':before===index?'유지':`${before+1} → ${index+1}`}</td><td>${escapeHtml((row.reasons||[]).join(' · '))}</td></tr>`;}).join('');
+  $('#history-detail-name').value=record.title;
+  $('#history-detail-note').value=record.note||'';
+  $('#history-detail-favorite').checked=Boolean(record.favorite);
+  $('#history-detail-dialog').showModal();
+}
+
+async function saveHistoryDetail() {
+  const id=state.historyDetailId;if(!id)return;
+  const title=$('#history-detail-name').value.trim();
+  if(!title){toast('빌드 이름을 입력하세요.');return;}
+  await api.updateHistory(id,{title,note:$('#history-detail-note').value,favorite:$('#history-detail-favorite').checked});
+  $('#history-detail-dialog').close();
+  await loadHistory();
+  toast('측정 기록을 수정했습니다.');
+}
+
+async function deleteHistoryDetail() {
+  const id=state.historyDetailId;if(!id)return;
+  if(!confirm('이 측정 기록을 삭제할까요?'))return;
+  await api.deleteHistory(id);
+  state.historySelected.delete(id);
+  if(state.historyRecordId===id)state.historyRecordId=null;
+  $('#history-detail-dialog').close();
+  await loadHistory();
+  toast('측정 기록을 삭제했습니다.');
+}
+
+function comparisonDifference(a,b,type) {
+  if(a==null||b==null)return '<span class="compare-unavailable">비교 불가</span>';
+  const difference=b-a;
+  if(Math.abs(difference)<.05)return '<span class="compare-unavailable">차이 없음</span>';
+  let text='';
+  if(type==='dps')text=`${difference>0?'+':''}${fmt(Math.round(difference))} (${a?`${difference/a*100>0?'+':''}${(difference/a*100).toFixed(1)}%`:'기준 없음'})`;
+  else if(type==='count')text=`${difference>0?'+':''}${Math.round(difference)}개`;
+  else text=`${difference>0?'+':''}${difference.toFixed(1)}%p`;
+  const improvement=type==='count'?difference<0:difference>0;
+  return `<span class="${improvement?'compare-positive':'compare-negative'}">${escapeHtml(text)}</span>`;
+}
+
+function showHistoryComparison() {
+  const records=[...state.historySelected].map(id=>state.history.find(item=>item.id===id)).filter(Boolean);
+  if(records.length!==2)return;
+  const [a,b]=records,conditionA=conditionSummary(a).rate,conditionB=conditionSummary(b).rate;
+  const metrics=[
+    {label:'실측 DPS',a:a.measurement.ocr?.dps,b:b.measurement.ocr?.dps,format:value=>value==null?'측정기 미표시':fmt(value),type:'dps'},
+    {label:'평타 행동 비중',a:Number(a.result.basicShare||0),b:Number(b.result.basicShare||0),format:value=>`${Math.round(value)}%`,type:'rate'},
+    {label:'조건 적중률',a:conditionA,b:conditionB,format:value=>value==null?'비교 불가':`${Math.round(value)}%`,type:'rate'},
+    {label:'평균 재사용 활용',a:cooldownUtilization(a),b:cooldownUtilization(b),format:value=>value==null?'비교 불가':`${Math.round(value)}%`,type:'rate'},
+    {label:'지연 도술',a:delayedRows(a).length,b:delayedRows(b).length,format:value=>`${value}개`,type:'count'},
+    {label:'측정 시간',a:a.measurement.durationMs,b:b.measurement.durationMs,format:formatDuration,type:'duration'}
+  ];
+  $('#compare-head').innerHTML=`<tr><th>항목</th><th>${escapeHtml(a.title)}</th><th>${escapeHtml(b.title)}</th><th>비교 결과</th></tr>`;
+  $('#compare-body').innerHTML=metrics.map(metric=>`<tr><td><b>${metric.label}</b></td><td class="compare-value">${metric.format(metric.a)}</td><td class="compare-value">${metric.format(metric.b)}</td><td>${metric.type==='duration'?'<span class="compare-unavailable">측정 구간 참고</span>':comparisonDifference(metric.a,metric.b,metric.type)}</td></tr>`).join('');
+  $('#history-compare-panel').hidden=false;
+  $('#history-compare-panel').scrollIntoView({behavior:'smooth',block:'start'});
+}
+
+async function finishMeasurement() {
   if (!state.build || !state.events.some(event=>event.type==='cast')) { toast('추천하려면 먼저 스킬 사용 기록이 필요합니다.'); return; }
   state.running=false;
   cancelAnimationFrame(state.loopId);
@@ -382,6 +620,7 @@ function finishMeasurement() {
   if(state.startedAt)result.durationMs=Math.max(0,Date.now()-state.startedAt);
   renderRecommendation(result);
   $('#result-dialog').showModal();
+  try{await saveMeasurementHistory(result,endedAt);}catch(error){toast(`측정 기록을 저장하지 못했습니다: ${error.message}`);}
 }
 
 function continueMeasurement() {
@@ -454,6 +693,7 @@ async function startCapture(source) {
     state.skillKeys.clear();
     state.pendingSlots = [];
     state.currentOrder = [];
+    state.historyRecordId = null;
     state.sequenceCursor = null;
     state.lastVisualCast = null;
     state.build = null;
@@ -677,7 +917,6 @@ function recordCast(skillId,key) {
   const event={type:'cast',skillId,key,at,evidence:'visual'};
   state.events.push(event);
   state.lastVisualCast=event;
-  if(state.events.length>500)state.events.splice(0,state.events.length-500);
   $('#finish-measurement').disabled=false;
   const card=$(`.deck-slot[data-skill="${skillId}"]`);if(card){card.classList.add('just-cast');setTimeout(()=>card.classList.remove('just-cast'),420);}
 }
@@ -686,7 +925,6 @@ function recordBasicAttack(at=Date.now()){
   const previous=[...state.events].reverse().find(event=>event.type==='basic');
   if(previous&&at-previous.at<350)return;
   state.events.push({type:'basic',key:'Space',at,evidence:'visual'});
-  if(state.events.length>500)state.events.splice(0,state.events.length-500);
 }
 
 function toggleAnalysis() {
@@ -698,12 +936,14 @@ function toggleAnalysis() {
 }
 
 function resetSession() {
-  state.events=[];state.slotStates.clear();state.basicState=null;state.sequenceCursor=null;state.lastVisualCast=null;state.startedAt=Date.now();$('#finish-measurement').disabled=true;renderReport();toast('현재 분석 기록을 초기화했습니다.');
+  state.events=[];state.slotStates.clear();state.basicState=null;state.sequenceCursor=null;state.lastVisualCast=null;state.startedAt=Date.now();state.historyRecordId=null;$('#finish-measurement').disabled=true;renderReport();toast('현재 분석 기록을 초기화했습니다.');
 }
 
 async function init() {
   state.catalog=await api.getCatalog();
   state.byId=new Map(state.catalog.skills.map(s=>[s.id,s]));
+  state.appVersion=await api.getAppVersion();
+  await loadHistory();
   await prepareTemplates();
   if(new URLSearchParams(location.search).has('demo')){
     const names=['요력','주먹 지르기','대폭발','내려찍기','기습','날카로운 얼음창','붕괴하는 대지','밀쳐내는 화살','휘둘러 내려치기'];
@@ -723,5 +963,13 @@ $('#finish-measurement').onclick=finishMeasurement;$('#continue-measurement').on
 $('#confirm-slots').onclick=openSlotConfirmation;$('#apply-slots').onclick=applyConfirmedSlots;
 $('#always-top').onchange=event=>api.setAlwaysOnTop(event.target.checked);
 $('#recalibrate').onclick=()=>{updateOutlines();toast('현재 창 크기에 맞춰 감지 위치를 다시 계산했습니다.');};
+$('#live-tab').onclick=()=>switchAppView('live');
+$('#history-tab').onclick=()=>switchAppView('history');
+$('#history-search').oninput=renderHistory;
+$('#history-favorites').onchange=renderHistory;
+$('#compare-history').onclick=showHistoryComparison;
+$('#close-history-compare').onclick=()=>{$('#history-compare-panel').hidden=true;};
+$('#save-history-detail').onclick=saveHistoryDetail;
+$('#delete-history-detail').onclick=deleteHistoryDetail;
 window.addEventListener('resize',updateOutlines);
 init().catch(error=>toast(`초기화 실패: ${error.message}`));
